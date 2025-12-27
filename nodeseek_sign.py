@@ -461,6 +461,10 @@ if __name__ == "__main__":
         account = accounts[i]
         user = account["user"]
         password = account["password"]
+        
+        display_user = user if user else f"账号{account_index}"
+        print(f"\n==== 账号 {display_user} 开始签到 ====")
+
         MAX_RETRIES = 5
         RETRY_DELAY = 120
 

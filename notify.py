@@ -117,7 +117,11 @@ push_config = {
     'WEBHOOK_BODY': '',                 # 自定义通知 请求体
     'WEBHOOK_HEADERS': '',              # 自定义通知 请求头
     'WEBHOOK_METHOD': '',               # 自定义通知 请求方法
-    'WEBHOOK_CONTENT_TYPE': ''          # 自定义通知 content-type
+    'WEBHOOK_CONTENT_TYPE': '',         # 自定义通知 content-type
+
+    'NOTIFY_HUB_URL': '',               # Notify Hub URL
+    'NOTIFY_HUB_KEY': '',               # Notify Hub Key
+    'NOTIFY_HUB_PROJECT': ''            # Notify Hub Project Name
 }
 # fmt: on
 
@@ -861,6 +865,58 @@ def custom_notify(title: str, content: str) -> None:
         print(f"自定义通知推送失败！{response.status_code} {response.text}")
 
 
+def notify_hub(title: str, content: str) -> None:
+    """
+    通过 Notify Hub 推送消息。
+    """
+    if not push_config.get("NOTIFY_HUB_KEY"):
+        # print("Notify Hub 的 NOTIFY_HUB_KEY 未设置!!\n取消推送") 
+        # 为了不打扰其他用户，未设置时不报错，直接返回，只有设置了才推送
+        return
+    
+    print("Notify Hub 服务启动")
+    
+    url = push_config.get("NOTIFY_HUB_URL")
+    if not url:
+        url = "http://localhost:8000/api/notify"
+        
+    project = push_config.get("NOTIFY_HUB_PROJECT")
+    if not project:
+        project = "NodeSeek签到"
+    
+    # 自动判断 level
+    level = "info"
+    if "失败" in title or "失败" in content or "错误" in content or "异常" in content:
+        level = "error"
+    elif "成功" in title or "成功" in content:
+        level = "success"
+    elif "警告" in title or "警告" in content:
+        level = "warning"
+        
+    headers = {
+        "X-Project-Key": push_config.get("NOTIFY_HUB_KEY"),
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "project_name": project,
+        "title": title,
+        "content": content,
+        "level": level
+    }
+    
+    try:
+        response = requests.post(url, json=data, headers=headers, timeout=10)
+        if response.status_code == 200:
+            print("Notify Hub 推送成功！")
+        elif response.status_code == 403:
+             print("Notify Hub 推送失败：鉴权 Key 错误")
+        else:
+            print(f"Notify Hub 推送失败：{response.status_code} {response.text}")
+    except Exception as e:
+        print(f"Notify Hub 推送异常: {e}")
+
+
 def one() -> str:
     """
     获取一条一言。
@@ -929,6 +985,8 @@ def add_notify_function():
         notify_function.append(chronocat)
     if push_config.get("WEBHOOK_URL") and push_config.get("WEBHOOK_METHOD"):
         notify_function.append(custom_notify)
+    if push_config.get("NOTIFY_HUB_KEY"):
+        notify_function.append(notify_hub)
 
     if not notify_function:
         print(f"无推送渠道，请检查通知变量是否正确")
