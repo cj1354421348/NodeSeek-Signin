@@ -1,8 +1,13 @@
-# 使用轻量级的 Python 基础镜像
-FROM python:3.9-alpine
+# 使用轻量级但兼容性更好的 Python Slim 镜像
+FROM python:3.9-slim
 
 # 设置时区为 GMT+8
-RUN apk add --no-cache tzdata ca-certificates
+# 安装 tzdata 和 ca-certificates (curl_cffi 可能需要)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV TZ=Asia/Shanghai
 
 # 设置工作目录
