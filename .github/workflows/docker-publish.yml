@@ -47,6 +47,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # 保持 main 标签
+            type=ref,event=branch
+            # 添加时间戳标签 (例如: 20241227-2000)
+            type=raw,value={{date 'YYYYMMDD-HHmm'}}
+            # 添加构建编号标签 (例如: v15)
+            type=raw,value=v${{ github.run_number }}
+            # 只有在 release 时才打 latest
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
 
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action
