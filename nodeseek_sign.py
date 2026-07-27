@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from curl_cffi import requests
 from yescaptcha import YesCaptchaSolver, YesCaptchaSolverError
 from turnstile_solver import TurnstileSolver, TurnstileSolverError
+from capsolver import CapSolver, CapSolverError
 
 def _get_env_str(name: str, default: str = "") -> str:
     """读取环境变量并去掉空白；若为空字符串则回退 default。"""
@@ -169,7 +170,7 @@ def delete_ql_env(var_name: str):
         else:
             print(f"未找到环境变量: {var_name}")
             return True
-    except (TurnstileSolverError, YesCaptchaSolverError) as e:
+    except (TurnstileSolverError, YesCaptchaSolverError, CapSolverError) as e:
         print(f"验证码解析错误: {e}")
         return None
     except Exception as e:
@@ -250,6 +251,12 @@ def session_login(user, password, solver_type, api_base_url, client_key):
                 api_base_url=api_base_url or "https://api.yescaptcha.com",
                 client_key=client_key
             )
+        elif solver_type.lower() == "capsolver":
+            print("正在使用 CapSolver 解决验证码...")
+            solver = CapSolver(
+                api_base_url=api_base_url or "https://api.capsolver.com",
+                client_key=client_key
+            )
         else:  # 默认使用 turnstile_solver
             print("正在使用 TurnstileSolver 解决验证码...")
             solver = TurnstileSolver(
@@ -277,9 +284,7 @@ def session_login(user, password, solver_type, api_base_url, client_key):
 
     data = {
         "username": user,
-        "password": password,
-        "token": token,
-        "source": "turnstile"
+        "password": password
     }
     headers = {
         'User-Agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
@@ -292,7 +297,9 @@ def session_login(user, password, solver_type, api_base_url, client_key):
         'sec-fetch-dest': "empty",
         'referer': "https://www.nodeseek.com/signIn.html",
         'accept-language': "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-        'Content-Type': "application/json"
+        'Content-Type': "application/json",
+        'x-captcha-source': "turnstile",
+        'x-captcha-token': token
     }
     try:
         response = session.post("https://www.nodeseek.com/api/account/signIn", json=data, headers=headers)
@@ -506,9 +513,15 @@ def print_signin_stats(stats, account_name):
 
 # ---------------- 主流程 ----------------
 if __name__ == "__main__":
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
     solver_type = os.getenv("SOLVER_TYPE", "turnstile")
     api_base_url = os.getenv("API_BASE_URL", "")
-    client_key = os.getenv("CLIENTT_KEY", "") 
+    client_key = os.getenv("CLIENT_KEY") or os.getenv("CLIENTT_KEY", "")
     ns_random = os.getenv("NS_RANDOM", "true")
 
     env_type = detect_environment()
