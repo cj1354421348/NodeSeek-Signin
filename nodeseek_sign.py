@@ -304,6 +304,10 @@ def session_login(user, password, solver_type, api_base_url, client_key):
     try:
         response = session.post("https://www.nodeseek.com/api/account/signIn", json=data, headers=headers)
         print(f"[DEBUG] 登录响应状态码: {response.status_code}")
+        # 铁证：直接看服务端有没有下发 Set-Cookie 头。
+        # 作者参考实现（nodeseek-cloudflare-worker.js）明确依赖 success 时的 Set-Cookie。
+        sc = response.headers.get("set-cookie") or response.headers.get("Set-Cookie")
+        print(f"[DEBUG] Set-Cookie 头: {sc if sc else '(无 —— 服务端未下发任何 Cookie，登录被邮箱验证拦截)'}")
         # 关键诊断：Cloudflare 拦截时返回的是 HTML 挑战页而非 JSON，
         # 必须把响应体预览打出来，否则真实原因被吞掉，永远在猜。
         body_preview = response.text[:500] if response.text else "(空响应体)"
@@ -315,6 +319,21 @@ def session_login(user, password, solver_type, api_base_url, client_key):
             return None
         if resp_json.get("success"):
             cookies = session.cookies.get_dict()
+            if not cookies:
+                # 接口报 success 却没下发 Cookie：通常是账号被设为"邮箱链接登录"
+                # 或触发了邮箱二次验证。真正的会话 Cookie 只在点击邮件验证链接后下发，
+                # 而本脚本只调用了一次 signIn 并不会打开 emailSignIn 页面去触发发信，
+                # 因此自动流程永远拿不到 Cookie——必须手动在浏览器完成验证后配置 NS_COOKIE。
+                redirect = resp_json.get("redirect", "")
+                if "emailSignIn" in redirect:
+                    print(f"登录接口返回 success，但服务端未下发 Cookie"
+                          f"（跳转至邮箱验证: {redirect}）。\n"
+                          f"  → 该账号需走邮箱链接登录：脚本无法自动完成，不会收到验证邮件。\n"
+                          f"  → 请用真实浏览器登录并完成邮箱验证，把 Cookie 配到 .env 的 NS_COOKIE；"
+                          f"或在 .env 中直接提供 NS_COOKIE，Docker 现已支持读取该变量。")
+                else:
+                    print(f"登录接口返回 success，但未下发任何 Cookie（跳转: {redirect}）。")
+                return None
             cookie_string = '; '.join([f"{k}={v}" for k, v in cookies.items()])
             return cookie_string
         else:
@@ -567,6 +586,14 @@ if __name__ == "__main__":
                 print(f"从文件读取Cookie失败: {e}")
         else:
             print("Cookie文件不存在，将使用空Cookie。")
+        # 关键修复：Docker 环境绝不能丢弃 NS_COOKIE 环境变量。
+        # 否则用户在 .env 里配置的 Cookie 会被静默无视，被迫走登录——
+        # 这正是"本地能跑、Docker 不行"的根因。文件为空时回退到环境变量。
+        if not all_cookies:
+            env_cookie = os.getenv("NS_COOKIE", "")
+            if env_cookie:
+                all_cookies = env_cookie.strip()
+                print("Cookie文件为空，已回退读取 NS_COOKIE 环境变量。")
     else:
         all_cookies = os.getenv("NS_COOKIE", "")
         
