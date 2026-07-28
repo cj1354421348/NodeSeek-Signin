@@ -303,7 +303,16 @@ def session_login(user, password, solver_type, api_base_url, client_key):
     }
     try:
         response = session.post("https://www.nodeseek.com/api/account/signIn", json=data, headers=headers)
-        resp_json = response.json()
+        print(f"[DEBUG] 登录响应状态码: {response.status_code}")
+        # 关键诊断：Cloudflare 拦截时返回的是 HTML 挑战页而非 JSON，
+        # 必须把响应体预览打出来，否则真实原因被吞掉，永远在猜。
+        body_preview = response.text[:500] if response.text else "(空响应体)"
+        print(f"[DEBUG] 登录响应预览: {body_preview}")
+        try:
+            resp_json = response.json()
+        except Exception:
+            print("[DEBUG] 响应不是合法 JSON —— 高度疑似 Cloudflare 挑战页/拦截页，登录已被拦截")
+            return None
         if resp_json.get("success"):
             cookies = session.cookies.get_dict()
             cookie_string = '; '.join([f"{k}={v}" for k, v in cookies.items()])
