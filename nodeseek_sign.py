@@ -244,6 +244,13 @@ def save_cookie(var_name: str, cookie: str):
 
 # ---------------- 登录逻辑 ----------------
 def session_login(user, password, solver_type, api_base_url, client_key):
+    """尝试登录并返回 (cookie, status)。
+
+    status 含义：
+      "ok"     — 登录成功，拿到了 Cookie
+      "retry"  — 临时错误（验证码/网络），可以重试
+      "fatal"  — 不可恢复错误（邮箱验证/风控/密码错），重试只会更糟
+    """
     try:
         if solver_type.lower() == "yescaptcha":
             print("正在使用 YesCaptcha 解决验证码...")
@@ -257,7 +264,7 @@ def session_login(user, password, solver_type, api_base_url, client_key):
                 api_base_url=api_base_url or "https://api.capsolver.com",
                 client_key=client_key
             )
-        else:  # 默认使用 turnstile_solver
+        else:
             print("正在使用 TurnstileSolver 解决验证码...")
             solver = TurnstileSolver(
                 api_base_url=api_base_url,
@@ -271,15 +278,13 @@ def session_login(user, password, solver_type, api_base_url, client_key):
         )
         if not token:
             print("验证码解析失败")
-            return None
+            return None, "retry"
     except Exception as e:
         print(f"验证码错误: {e}")
-        return None
+        return None, "retry"
 
-    # 优先使用环境变量指定的 IMPERSONATE_VERSION（若未设置则使用默认值），作为首次尝试的指纹
-    initial_impersonate = IMPERSONATE_VERSION
-    session = requests.Session(impersonate=initial_impersonate)
-    print(f"[INFO] 使用初始 impersonate: {initial_impersonate}")
+    session = requests.Session(impersonate=IMPERSONATE_VERSION)
+    print(f"[INFO] 使用 impersonate: {IMPERSONATE_VERSION}")
     session.get("https://www.nodeseek.com/signIn.html")
 
     data = {
@@ -303,45 +308,46 @@ def session_login(user, password, solver_type, api_base_url, client_key):
     }
     try:
         response = session.post("https://www.nodeseek.com/api/account/signIn", json=data, headers=headers)
-        print(f"[DEBUG] 登录响应状态码: {response.status_code}")
-        # 铁证：直接看服务端有没有下发 Set-Cookie 头。
-        # 作者参考实现（nodeseek-cloudflare-worker.js）明确依赖 success 时的 Set-Cookie。
-        sc = response.headers.get("set-cookie") or response.headers.get("Set-Cookie")
-        print(f"[DEBUG] Set-Cookie 头: {sc if sc else '(无 —— 服务端未下发任何 Cookie，登录被邮箱验证拦截)'}")
-        # 关键诊断：Cloudflare 拦截时返回的是 HTML 挑战页而非 JSON，
-        # 必须把响应体预览打出来，否则真实原因被吞掉，永远在猜。
-        body_preview = response.text[:500] if response.text else "(空响应体)"
-        print(f"[DEBUG] 登录响应预览: {body_preview}")
+        # 先尝试解析 JSON；解析失败 = Cloudflare 拦截，临时错误可重试
         try:
             resp_json = response.json()
         except Exception:
-            print("[DEBUG] 响应不是合法 JSON —— 高度疑似 Cloudflare 挑战页/拦截页，登录已被拦截")
-            return None
+            print(f"[DEBUG] 登录响应不是 JSON（状态码 {response.status_code}），疑似 Cloudflare 拦截")
+            body_preview = (response.text or "")[:200]
+            if body_preview:
+                print(f"[DEBUG] 响应预览: {body_preview}")
+            return None, "retry"
+
         if resp_json.get("success"):
             cookies = session.cookies.get_dict()
             if not cookies:
-                # 接口报 success 却没下发 Cookie：通常是账号被设为"邮箱链接登录"
-                # 或触发了邮箱二次验证。真正的会话 Cookie 只在点击邮件验证链接后下发，
-                # 而本脚本只调用了一次 signIn 并不会打开 emailSignIn 页面去触发发信，
-                # 因此自动流程永远拿不到 Cookie——必须手动在浏览器完成验证后配置 NS_COOKIE。
                 redirect = resp_json.get("redirect", "")
                 if "emailSignIn" in redirect:
-                    print(f"登录接口返回 success，但服务端未下发 Cookie"
-                          f"（跳转至邮箱验证: {redirect}）。\n"
-                          f"  → 该账号需走邮箱链接登录：脚本无法自动完成，不会收到验证邮件。\n"
-                          f"  → 请用真实浏览器登录并完成邮箱验证，把 Cookie 配到 .env 的 NS_COOKIE；"
-                          f"或在 .env 中直接提供 NS_COOKIE，Docker 现已支持读取该变量。")
+                    print("登录被邮箱验证拦截。\n"
+                          "  → 该账号在当前 IP 下需要邮箱验证，自动流程永远拿不到 Cookie。\n"
+                          "  → 请用你本机的真实浏览器登录 NodeSeek 完成验证，\n"
+                          "    然后从浏览器开发者工具复制 Cookie 填到 .env 的 NS_COOKIE。")
                 else:
-                    print(f"登录接口返回 success，但未下发任何 Cookie（跳转: {redirect}）。")
-                return None
+                    print(f"登录返回 success 但未下发 Cookie（跳转: {redirect}），不再重试。")
+                return None, "fatal"
             cookie_string = '; '.join([f"{k}={v}" for k, v in cookies.items()])
-            return cookie_string
-        else:
-            print("登录失败:", resp_json.get("message"))
-            return None
+            return cookie_string, "ok"
+
+        # success:false
+        error_msg = resp_json.get("message", "")
+        error_code = resp_json.get("error", "")
+
+        if error_code == "RATE_LIMITED":
+            print(f"登录被限流: {error_msg}\n"
+                  f"  → 重试只会让风控更严。请在 .env 中配置 NS_COOKIE 跳过自动登录。")
+            return None, "fatal"
+
+        print(f"登录失败: {error_msg}")
+        # 通用失败（密码错误等）—— 重试没有意义
+        return None, "fatal"
     except Exception as e:
-        print("登录异常:", e)
-        return None
+        print(f"登录异常: {e}")
+        return None, "retry"
 
 # ---------------- 签到逻辑 ----------------
 def _is_cloudflare_challenge(text: str) -> bool:
@@ -673,7 +679,7 @@ if __name__ == "__main__":
                 
                 if user and password:
                     print("尝试重新登录获取新Cookie...")
-                    new_cookie = session_login(user, password, solver_type, api_base_url, client_key)
+                    new_cookie, login_status = session_login(user, password, solver_type, api_base_url, client_key)
                     if new_cookie:
                         print("登录成功，使用新Cookie重新签到...")
                         result, msg = sign(new_cookie, ns_random)
@@ -703,6 +709,11 @@ if __name__ == "__main__":
                             print(f"账号 {display_user} 重新签到仍然失败: {msg}")
                     else:
                         print(f"账号 {display_user} 登录失败，无法获取新Cookie")
+                        # 不可恢复的错误（邮箱验证/风控/密码错）——
+                        # 重试只会让账号被锁更久，立刻停止。
+                        if login_status == "fatal":
+                            print(f"  → 登录错误不可恢复，跳过重试以避免触发风控。")
+                            break
                         # 仅在最后一次尝试失败时发送通知
                         if attempt == MAX_RETRIES and hadsend:
                             try:
