@@ -242,6 +242,23 @@ def save_cookie(var_name: str, cookie: str):
         print("未检测到支持的环境，跳过变量保存")
         return False
 
+# ---------------- 调试/环境工具函数 ----------------
+def get_current_public_ip():
+    """获取并打印当前出口外网 IP"""
+    print("正在检测当前网络出口 IP...")
+    for url in ["https://api.ipify.org?format=json", "https://ipinfo.io/json"]:
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                ip = data.get("ip") or data.get("query")
+                print(f"[DEBUG] 当前出口外网 IP 为: {ip} (数据来源: {url})")
+                return ip
+        except Exception as e:
+            continue
+    print("[DEBUG] 获取出口外网 IP 失败")
+    return None
+
 # ---------------- 登录逻辑 ----------------
 def session_login(user, password, solver_type, api_base_url, client_key):
     """尝试登录并返回 (cookie, status)。
@@ -308,6 +325,11 @@ def session_login(user, password, solver_type, api_base_url, client_key):
     }
     try:
         response = session.post("https://www.nodeseek.com/api/account/signIn", json=data, headers=headers)
+        print(f"[DEBUG] 登录响应 HTTP 状态码: {response.status_code}")
+        print(f"[DEBUG] 登录响应 Headers: {dict(response.headers)}")
+        print(f"[DEBUG] 登录响应 Session Cookies: {session.cookies.get_dict()}")
+        print(f"[DEBUG] 登录响应 原始 Body: {response.text}")
+
         # 先尝试解析 JSON；解析失败 = Cloudflare 拦截，临时错误可重试
         try:
             resp_json = response.json()
@@ -560,6 +582,7 @@ if __name__ == "__main__":
 
     env_type = detect_environment()
     print(f"当前运行环境: {env_type}")
+    get_current_public_ip()
     
     accounts = []
 
