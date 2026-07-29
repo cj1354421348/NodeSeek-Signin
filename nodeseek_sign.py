@@ -74,6 +74,20 @@ def _get_impersonate_candidates() -> list[str]:
 IMPERSONATE_VERSION = _get_env_str("NS_IMPERSONATE", "chrome110")
 IMPERSONATE_CANDIDATES = _get_impersonate_candidates()
 
+# ---------------- 代理与重试配置 ----------------
+PROXY_URL = _get_env_str("PROXY") or _get_env_str("HTTP_PROXY") or _get_env_str("HTTPS_PROXY")
+PROXIES = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+
+try:
+    MAX_RETRIES = int(_get_env_str("MAX_RETRIES", "5"))
+except ValueError:
+    MAX_RETRIES = 5
+
+try:
+    RETRY_DELAY = int(_get_env_str("RETRY_DELAY", "120"))
+except ValueError:
+    RETRY_DELAY = 120
+
 # ---------------- 通知模块动态加载 ----------------
 hadsend = False
 send = None
@@ -244,19 +258,36 @@ def save_cookie(var_name: str, cookie: str):
 
 # ---------------- 调试/环境工具函数 ----------------
 def get_current_public_ip():
-    """获取并打印当前出口外网 IP"""
-    print("正在检测当前网络出口 IP...")
+    """获取并打印当前出口外网 IP (直连与代理)"""
+    print("正在检测网络出口 IP...")
+    # 1. 检测直连 IP
     for url in ["https://api.ipify.org?format=json", "https://ipinfo.io/json"]:
         try:
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 ip = data.get("ip") or data.get("query")
-                print(f"[DEBUG] 当前出口外网 IP 为: {ip} (数据来源: {url})")
-                return ip
-        except Exception as e:
+                print(f"[DEBUG] 容器直连出口 IP: {ip} (来源: {url})")
+                break
+        except Exception:
             continue
-    print("[DEBUG] 获取出口外网 IP 失败")
+
+    # 2. 检测代理出口 IP
+    if PROXY_URL:
+        print(f"[DEBUG] 已启用代理配置: {PROXY_URL}")
+        for url in ["https://api.ipify.org?format=json", "https://ipinfo.io/json"]:
+            try:
+                resp = requests.get(url, proxies=PROXIES, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    ip = data.get("ip") or data.get("query")
+                    print(f"[DEBUG] 代理出口 IP: {ip} (来源: {url})")
+                    break
+            except Exception as e:
+                print(f"[DEBUG] 代理检测 IP 失败: {e}")
+                break
+    else:
+        print("[DEBUG] 未配置代理 (可通过环境变量 PROXY 或 HTTP_PROXY 配置)")
     return None
 
 # ---------------- 登录逻辑 ----------------
@@ -300,8 +331,10 @@ def session_login(user, password, solver_type, api_base_url, client_key):
         print(f"验证码错误: {e}")
         return None, "retry"
 
-    session = requests.Session(impersonate=IMPERSONATE_VERSION)
+    session = requests.Session(impersonate=IMPERSONATE_VERSION, proxies=PROXIES)
     print(f"[INFO] 使用 impersonate: {IMPERSONATE_VERSION}")
+    if PROXY_URL:
+        print(f"[INFO] 登录请求已挂载代理: {PROXY_URL}")
     session.get("https://www.nodeseek.com/signIn.html")
 
     data = {
@@ -386,7 +419,7 @@ def _request_with_impersonate_fallback(method: str, url: str, *, headers: dict, 
     ordered_candidates = [IMPERSONATE_VERSION] + [v for v in IMPERSONATE_CANDIDATES if v != IMPERSONATE_VERSION]
     for ver in ordered_candidates:
         try:
-            resp = requests.request(method, url, headers=headers, json=json_data, impersonate=ver, timeout=timeout)
+            resp = requests.request(method, url, headers=headers, json=json_data, impersonate=ver, timeout=timeout, proxies=PROXIES)
             last_resp = resp
             if resp.status_code != 403:
                 return resp, ver, None
@@ -653,9 +686,6 @@ if __name__ == "__main__":
         
         display_user = user if user else f"账号{account_index}"
         print(f"\n==== 账号 {display_user} 开始签到 ====")
-
-        MAX_RETRIES = 5
-        RETRY_DELAY = 120
 
         for attempt in range(1, MAX_RETRIES + 1):
             if attempt > 1:
